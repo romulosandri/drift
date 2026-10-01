@@ -24,7 +24,7 @@ npm run preview
 - **Between gradients** eases from the From grade to the To grade and back.
 - **Across the gradient** keeps one grade and eases until its ends flip.
 - **Shift speed** sets how long one full pass takes.
-- **Playback** sets the video’s own speed, from 0.25× to 2×. Pitch can stay put or follow the speed. Below 1×, the picture eases from one presented frame into the next so the motion does not step.
+- **Playback** sets the video’s own speed, from 0.25× to 2×. Pitch can stay put or follow the speed. The preview shows the frame the video is on, at whatever speed you set.
 - The picture sits in a centered frame. The button beside **Export** sets the aspect ratio, and whether the picture fills, stretches, or stays fully visible.
 - A still can be given a length in seconds. **Export** writes a silent MP4 at the chosen frame, up to 1920 pixels on the long edge. A still runs for the length you set. A video is decoded from the file itself, so the export is not a recording of the preview, and its length is the clip divided by the playback speed.
 
