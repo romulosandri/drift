@@ -65,8 +65,21 @@ export function formatCycle(seconds: number): string {
   return `${seconds.toFixed(1)}s cycle`;
 }
 
+export const PLAYBACK_MIN = 0.0625;
+export const PLAYBACK_MAX = 2;
+
+export function clampPlaybackRate(rate: number): number {
+  return Math.min(PLAYBACK_MAX, Math.max(PLAYBACK_MIN, rate));
+}
+
 export function formatRate(rate: number): string {
+  if (Math.abs(rate - PLAYBACK_MIN) < 0.0001) return "1/16×";
   return `${rate.toFixed(2)}×`;
+}
+
+export function easeFrameMix(amount: number): number {
+  const t = Math.min(1, Math.max(0, amount));
+  return t * t * (3 - 2 * t);
 }
 
 export function formatTime(seconds: number): string {
