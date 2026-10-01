@@ -1,0 +1,36 @@
+name: assemble-sources
+on:
+  push:
+    paths:
+      - .github/workflows/assemble-sources.yml
+permissions:
+  contents: write
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Place lockfile and demo text
+        run: |
+          set -euo pipefail
+          curl -fsSL -A "Mozilla/5.0" -o package-lock.json "https://tmpfiles.org/dl/1790864848.6b2652014da10df3/w6AQAd2TJzd8/package-lock.json"
+          mkdir -p scripts
+          curl -fsSL -A "Mozilla/5.0" -o scripts/demo.mp4.b64 "https://tmpfiles.org/dl/1790864861.b5ddefb53365573f/wfAiAf2jJ8PZ/demo.mp4.b64"
+          python3 - << 'PY'
+          import hashlib
+          import pathlib
+          checks = {
+              "package-lock.json": ("b1c690d3d1228913453472ed68057880d063a1ddb13151ae3e4bde7ada43b6f7", 401031),
+              "scripts/demo.mp4.b64": ("e2a1206714be984265adf4a526a2c89e51088b7d19428274d68390eefde8f4fc", 322044),
+          }
+          for path, (digest, size) in checks.items():
+              data = pathlib.Path(path).read_bytes()
+              actual = hashlib.sha256(data).hexdigest()
+              if len(data) != size or actual != digest:
+                  raise SystemExit(f"mismatch {path} size={len(data)} sha256={actual}")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json scripts/demo.mp4.b64
+          git commit -m "Add Drift, a moving gradient map for images and video."
+          git push origin HEAD:main
