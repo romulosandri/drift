@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label.tsx";
 import { Slider } from "@/components/ui/slider.tsx";
 import { Switch } from "@/components/ui/switch.tsx";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs.tsx";
-import { cycleSeconds, formatCycle, formatRate, sameStops, toCssGradient } from "@/lib/color.ts";
+import { PLAYBACK_MAX, PLAYBACK_MIN, cycleSeconds, formatCycle, formatRate, sameStops, toCssGradient } from "@/lib/color.ts";
 import { PASSAGES, PRESETS } from "@/lib/presets.ts";
 import type { EditTarget, MotionMode } from "@/lib/types.ts";
 import { cn } from "@/lib/utils.ts";
@@ -32,7 +32,7 @@ const SHIFT_PRESETS = [
   { label: "Fast", value: 0.72 },
 ];
 
-const RATE_PRESETS = [0.5, 1, 1.5, 2];
+const RATE_PRESETS = [PLAYBACK_MIN, 0.25, 0.5, 1, 2];
 
 function isEditTarget(value: string): value is EditTarget {
   return value === "a" || value === "b";
@@ -238,14 +238,14 @@ export function Controls() {
         </div>
         <p className="text-xs leading-relaxed text-white/50">
           {videoReady
-            ? "Changes how fast the video itself plays. The gradient shift keeps its own speed."
+            ? "The gradient keeps its own speed. Below 1×, Drift eases between the frames in the file, down to 1/16. Slow motion cannot add detail the camera never captured."
             : "Playback speed applies once a video is loaded. Stills only move the gradient."}
         </p>
         <Slider
           aria-label="Video playback speed"
-          min={0.25}
-          max={2}
-          step={0.05}
+          min={PLAYBACK_MIN}
+          max={PLAYBACK_MAX}
+          step={0.01}
           disabled={!videoReady}
           value={[studio.playbackRate]}
           onValueChange={([value]) => {
