@@ -279,31 +279,24 @@ export class GradientMapRenderer {
 
   private uploadSource(frame: DrawFrame) {
     const { gl } = this;
-    if (frame.source !== this.lastSource) {
-      this.lastSource = frame.source;
-      this.uploaded = false;
-    }
+    const changed = frame.source !== this.lastSource;
+    if (changed) this.lastSource = frame.source;
 
     const video = frame.source instanceof HTMLVideoElement ? frame.source : null;
-    if (video) {
-      if (video.readyState < 2 || video.videoWidth < 2) return;
-      if (this.uploaded && !frame.captureFrame) return;
-      if (this.uploaded && frame.frameMix < 0.999) this.copyCurrentToPrevious();
-      gl.bindTexture(gl.TEXTURE_2D, this.texture);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-      this.texWidth = video.videoWidth;
-      this.texHeight = video.videoHeight;
-      this.uploaded = true;
-      return;
-    }
+    if (video && (video.readyState < 2 || video.videoWidth < 2)) return;
+    if (this.uploaded && !changed && !frame.captureFrame) return;
+    if (this.uploaded && frame.frameMix < 0.999) this.copyCurrentToPrevious();
 
-    if (this.uploaded && !frame.captureFrame) return;
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame.source);
-    this.texWidth = frame.sourceWidth;
-    this.texHeight = frame.sourceHeight;
+    if (video) {
+      this.texWidth = video.videoWidth;
+      this.texHeight = video.videoHeight;
+    } else {
+      this.texWidth = frame.sourceWidth;
+      this.texHeight = frame.sourceHeight;
+    }
     this.uploaded = true;
-    this.copyCurrentToPrevious();
   }
 
   private copyCurrentToPrevious() {
