@@ -1,6 +1,6 @@
 import { ALL_FORMATS, BlobSource, BufferTarget, CanvasSink, CanvasSource, Input, Mp4OutputFormat, Output, Quality, getFirstEncodableVideoCodec } from "mediabunny";
 
-import { cycleSeconds } from "@/lib/color.ts";
+import { clampPlaybackRate, cycleSeconds, easeFrameMix } from "@/lib/color.ts";
 import { exportPixelSize } from "@/lib/frame.ts";
 import { GradientMapRenderer } from "@/lib/gradient-map.ts";
 import type { FitMode, GradientStop, LoadedMedia, MotionMode } from "@/lib/types.ts";
@@ -75,9 +75,66 @@ type DecodedPull = {
 };
 
 function sourceTimestamps(frameCount: number, sourceDuration: number, playbackRate: number): number[] {
-  const rate = Math.max(0.25, playbackRate);
+  const rate = clampPlaybackRate(playbackRate);
   const last = Math.max(0, sourceDuration - 0.001);
   return Array.from({ length: frameCount }, (_, index) => Math.min(last, (index / FPS) * rate));
+}
+
+type HeldFrames = {
+  frameAt: (time: number) => Promise<DecodedFrame>;
+  frameDuration: number;
+  close: () => void;
+};
+
+async function openHeldFrames(url: string): Promise<HeldFrames | null> {
+  const response = await fetch(url);
+  if (!response.ok) return null;
+  const input = new Input({
+    source: new BlobSource(await response.blob()),
+    formats: ALL_FORMATS,
+  });
+  try {
+    const track = await input.getPrimaryVideoTrack();
+    if (!track || !(await track.canDecode())) {
+      input.dispose();
+      return null;
+    }
+    const metrics = await track.computeFrameRateMetrics();
+    const fps = metrics.underlyingFrameRate ?? metrics.bestGuessFrameRate;
+    const frameDuration = fps > 1 && fps < 240 ? 1 / fps : 1 / 30;
+    const sink = new CanvasSink(track, { poolSize: 1 });
+    const holds = [document.createElement("canvas"), document.createElement("canvas")];
+    const keys = [Number.NaN, Number.NaN];
+    let slot = 0;
+    return {
+      frameDuration,
+      async frameAt(time: number) {
+        const key = Math.round(Math.max(0, time) * 1000);
+        for (let index = 0; index < holds.length; index += 1) {
+          const hold = holds[index];
+          if (hold && keys[index] === key) return { canvas: hold, width: hold.width, height: hold.height };
+        }
+        const wrapped = await sink.getCanvas(Math.max(0, time));
+        if (!wrapped) throw new Error("A video frame could not be decoded.");
+        const dest = holds[slot];
+        if (!dest) throw new Error("A video frame could not be decoded.");
+        keys[slot] = key;
+        slot = slot === 0 ? 1 : 0;
+        dest.width = wrapped.canvas.width;
+        dest.height = wrapped.canvas.height;
+        const context = dest.getContext("2d");
+        if (!context) throw new Error("A video frame could not be decoded.");
+        context.drawImage(wrapped.canvas, 0, 0);
+        return { canvas: dest, width: dest.width, height: dest.height };
+      },
+      close() {
+        input.dispose();
+      },
+    };
+  } catch {
+    input.dispose();
+    return null;
+  }
 }
 
 async function openDecodedPull(url: string, timestamps: number[]): Promise<DecodedPull | null> {
@@ -140,7 +197,7 @@ export async function renderExport(request: ExportRequest): Promise<Blob> {
     throw new Error("This file has no duration to export.");
   }
   const outputSeconds =
-    request.media.kind === "video" ? sourceDuration / Math.max(0.25, request.playbackRate) : request.imageDuration;
+    request.media.kind === "video" ? sourceDuration / clampPlaybackRate(request.playbackRate) : request.imageDuration;
   if (outputSeconds > MAX_SECONDS) {
     throw new Error("Exports stay within 2 minutes. Shorten the still, or play the video faster.");
   }
@@ -152,6 +209,7 @@ export async function renderExport(request: ExportRequest): Promise<Blob> {
 
   let exportVideo: HTMLVideoElement | null = null;
   let decoded: DecodedPull | null = null;
+  let held: HeldFrames | null = null;
   let open = false;
   const target = new BufferTarget();
   const output = new Output({
@@ -180,22 +238,56 @@ export async function renderExport(request: ExportRequest): Promise<Blob> {
     if (request.media.kind === "image" && !image) throw new Error("The still is not ready to export.");
     if (request.media.kind === "video") {
       if (!request.media.url) throw new Error("The video is not ready to export.");
-      const rate = Math.max(0.25, request.playbackRate);
-      decoded = await openDecodedPull(request.media.url, sourceTimestamps(frameCount, sourceDuration, rate));
-      if (!decoded) {
-        exportVideo = await openExportVideo(request.media.url, request.media.width, request.media.height);
+      const rate = clampPlaybackRate(request.playbackRate);
+      if (rate < 0.999) held = await openHeldFrames(request.media.url);
+      if (!held) {
+        decoded = await openDecodedPull(request.media.url, sourceTimestamps(frameCount, sourceDuration, rate));
+        if (!decoded) {
+          exportVideo = await openExportVideo(request.media.url, request.media.width, request.media.height);
+        }
       }
     }
 
     const period = cycleSeconds(request.shiftSpeed);
-    const rate = Math.max(0.25, request.playbackRate);
+    const rate = clampPlaybackRate(request.playbackRate);
     for (let index = 0; index < frameCount; index += 1) {
       const outputTime = index / FPS;
       const cycle = request.animate ? (outputTime / period) % 1 : 0;
       let source: TexImageSource | null = image;
       let sourceWidth = request.media.width;
       let sourceHeight = request.media.height;
-      if (decoded) {
+      let frameMix = 1;
+      if (held) {
+        const sourceTime = Math.min(Math.max(0, sourceDuration - 0.001), outputTime * rate);
+        const start = Math.floor(sourceTime / held.frameDuration) * held.frameDuration;
+        const end = Math.min(sourceDuration - 0.001, start + held.frameDuration);
+        const fraction = end <= start ? 1 : Math.min(1, (sourceTime - start) / held.frameDuration);
+        const first = await held.frameAt(start);
+        if (fraction > 0.001 && end > start + 0.0001) {
+          renderer.draw({
+            source: first.canvas,
+            sourceWidth: first.width,
+            sourceHeight: first.height,
+            gradeA: request.gradeA,
+            gradeB: request.gradeB,
+            mode: request.mode,
+            phase: easedPhase(cycle),
+            contrast: request.contrast,
+            fit: request.fit,
+            frameMix: 1,
+            captureFrame: true,
+          });
+          const second = await held.frameAt(end);
+          source = second.canvas;
+          sourceWidth = second.width;
+          sourceHeight = second.height;
+          frameMix = easeFrameMix(fraction);
+        } else {
+          source = first.canvas;
+          sourceWidth = first.width;
+          sourceHeight = first.height;
+        }
+      } else if (decoded) {
         const frame = await decoded.next();
         if (!frame) throw new Error("A video frame could not be decoded.");
         source = frame.canvas;
@@ -216,7 +308,7 @@ export async function renderExport(request: ExportRequest): Promise<Blob> {
         phase: easedPhase(cycle),
         contrast: request.contrast,
         fit: request.fit,
-        frameMix: 1,
+        frameMix,
         captureFrame: true,
       });
       await frames.add(outputTime, 1 / FPS);
@@ -230,6 +322,7 @@ export async function renderExport(request: ExportRequest): Promise<Blob> {
   } finally {
     if (open) await output.cancel().catch(() => undefined);
     decoded?.close();
+    held?.close();
     renderer.destroy();
     if (exportVideo) {
       exportVideo.pause();
