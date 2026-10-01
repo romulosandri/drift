@@ -4,9 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "predev": "node scripts/unpack-demo.mjs",
     "dev": "vite",
-    "prebuild": "node scripts/unpack-demo.mjs",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview"

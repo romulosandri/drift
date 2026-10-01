@@ -21,7 +21,6 @@ npm run preview
 ## Use it
 
 - Drop an image or video onto the stage, or upload one.
-- **Studio still** and **Demo reel** load built-in sources so you can try the grade before bringing your own file.
 - **Between gradients** eases from the From grade to the To grade and back.
 - **Across the gradient** keeps one grade and eases until its ends flip.
 - **Shift speed** sets how long one full pass takes.

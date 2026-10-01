@@ -79,12 +79,6 @@ export function Controls() {
           <Button size="sm" onClick={studio.openFilePicker}>
             Upload
           </Button>
-          <Button size="sm" variant="outline" onClick={studio.loadStill}>
-            Studio still
-          </Button>
-          <Button size="sm" variant="outline" onClick={studio.loadDemo}>
-            Demo reel
-          </Button>
         </div>
       </section>
 

@@ -55,12 +55,6 @@ export function Stage() {
             </div>
             <div className="flex flex-wrap gap-2">
               <Button onClick={studio.openFilePicker}>Upload</Button>
-              <Button variant="outline" onClick={studio.loadStill}>
-                Studio still
-              </Button>
-              <Button variant="outline" onClick={studio.loadDemo}>
-                Demo reel
-              </Button>
             </div>
           </div>
         </motion.div>

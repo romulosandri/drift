@@ -9,7 +9,6 @@ import { useGradientLoop } from "@/hooks/use-gradient-loop.ts";
 import { mixHex } from "@/lib/color.ts";
 import { downloadBlob, isMediaFile } from "@/lib/download.ts";
 import { cloneStops, presetById } from "@/lib/presets.ts";
-import { createStudioStill } from "@/lib/studio-still.ts";
 import type { EditTarget, GradientStop, LoadedMedia, MotionMode, RenderSnapshot } from "@/lib/types.ts";
 
 function fileStem(name: string): string {
@@ -276,52 +275,6 @@ export function Studio() {
     }
   }
 
-  function loadStill() {
-    const generation = ++loadId.current;
-    stopRecording();
-    releaseCurrent();
-    stopVideoElement();
-    try {
-      const still = createStudioStill();
-      if (generation !== loadId.current) return;
-      imageRef.current = still;
-      const next: LoadedMedia = {
-        kind: "image",
-        name: "Studio still",
-        url: "",
-        revoke: false,
-        width: still.width,
-        height: still.height,
-        duration: null,
-      };
-      mediaRef.current = next;
-      setMedia(next);
-      setError(null);
-      setPlaying(false);
-      setCurrentTime(0);
-      setLoading(false);
-      restartShift();
-    } catch (stillError) {
-      setError(stillError instanceof Error ? stillError.message : "Could not draw the studio still.");
-    }
-  }
-
-  async function loadDemo() {
-    const generation = ++loadId.current;
-    setLoading(true);
-    setError(null);
-    stopRecording();
-    releaseCurrent();
-    try {
-      await loadVideoElement("/demo.mp4", "Demo reel", false, generation);
-    } catch (demoError) {
-      if (generation !== loadId.current) return;
-      setError(demoError instanceof Error ? demoError.message : "Could not load the demo reel.");
-    } finally {
-      if (generation === loadId.current) setLoading(false);
-    }
-  }
-
   function clearMedia() {
     loadId.current += 1;
     stopRecording();
@@ -513,8 +466,6 @@ export function Studio() {
     removeMidtone,
     restartShift,
     openFilePicker: () => fileRef.current?.click(),
-    loadStill,
-    loadDemo: () => void loadDemo(),
     clearMedia,
     togglePlay,
     scrub,
