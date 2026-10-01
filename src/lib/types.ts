@@ -2,6 +2,10 @@ export type MotionMode = "blend" | "sweep";
 
 export type EditTarget = "a" | "b";
 
+export type FitMode = "fill" | "fit" | "contain";
+
+export type AspectChoice = "original" | "16:9" | "9:16" | "1:1" | "4:5" | "4:3" | "3:2";
+
 export type GradientStop = {
   color: string;
   at: number;
@@ -24,5 +28,6 @@ export type RenderSnapshot = {
   shiftSpeed: number;
   animate: boolean;
   contrast: number;
+  fit: FitMode;
   media: LoadedMedia | null;
 };
