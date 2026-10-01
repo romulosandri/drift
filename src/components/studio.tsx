@@ -6,7 +6,7 @@ import { Stage } from "@/components/stage.tsx";
 import { StudioProvider, type StudioApi } from "@/components/studio-context.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { useGradientLoop } from "@/hooks/use-gradient-loop.ts";
-import { mixHex } from "@/lib/color.ts";
+import { clampPlaybackRate, mixHex } from "@/lib/color.ts";
 import { downloadBlob, isMediaFile } from "@/lib/download.ts";
 import { renderExport } from "@/lib/export-movie.ts";
 import { aspectRatio } from "@/lib/frame.ts";
@@ -88,7 +88,7 @@ export function Studio() {
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    video.playbackRate = playbackRate;
+    video.playbackRate = clampPlaybackRate(playbackRate);
     video.loop = loop;
     video.muted = muted;
     video.preservesPitch = keepPitch;
@@ -160,7 +160,7 @@ export function Studio() {
   }
 
   function applyPitch(video: HTMLVideoElement) {
-    video.playbackRate = playbackRateRef.current;
+    video.playbackRate = clampPlaybackRate(playbackRateRef.current);
     video.loop = loopRef.current;
     video.muted = mutedRef.current;
     video.preservesPitch = pitchRef.current;
