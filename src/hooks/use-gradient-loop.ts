@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 
-import { cycleSeconds } from "@/lib/color.ts";
+import { cycleSeconds, easeFrameMix } from "@/lib/color.ts";
 import { GradientMapRenderer } from "@/lib/gradient-map.ts";
 import type { LoadedMedia, RenderSnapshot } from "@/lib/types.ts";
 
@@ -37,6 +37,38 @@ export function useGradientLoop({ canvasRef, snapshotRef, imageRef, videoRef }: 
     let frameId = 0;
     let last = performance.now();
     let cycle = 0;
+    let lastMediaTime = -1;
+    let frameGap = 0.12;
+    let blendStart = 0;
+    let heldMix = 1;
+    let blending = false;
+    let havePresented = false;
+    let presentedAt = 0;
+    let pendingWall: number | null = null;
+    let watchId = 0;
+    let watched: HTMLVideoElement | null = null;
+
+    const stopWatch = () => {
+      if (watched && watchId) watched.cancelVideoFrameCallback(watchId);
+      watchId = 0;
+      watched = null;
+    };
+
+    const armWatch = (video: HTMLVideoElement) => {
+      if (watched === video) return;
+      stopWatch();
+      if (typeof video.requestVideoFrameCallback !== "function") return;
+      watched = video;
+      const onPresented = (now: number) => {
+        watchId = video.requestVideoFrameCallback(onPresented);
+        const rate = video.playbackRate || 1;
+        if (rate >= 0.999 || video.paused) return;
+        pendingWall = havePresented ? (now - presentedAt) / 1000 : 0;
+        presentedAt = now;
+        havePresented = true;
+      };
+      watchId = video.requestVideoFrameCallback(onPresented);
+    };
 
     const resize = () => {
       const parent = canvas.parentElement;
@@ -64,7 +96,52 @@ export function useGradientLoop({ canvasRef, snapshotRef, imageRef, videoRef }: 
 
       const source = sourceFor(snapshot.media, imageRef.current, videoRef.current);
       const video = snapshot.media?.kind === "video" && source instanceof HTMLVideoElement ? source : null;
-      const captureFrame = Boolean(video && video.readyState >= 2 && video.videoWidth >= 2);
+      let captureFrame = false;
+      if (video && video.readyState >= 2 && video.videoWidth >= 2) {
+        armWatch(video);
+        const rate = video.playbackRate || 1;
+        const time = video.currentTime;
+        const seeked = lastMediaTime >= 0 && Math.abs(time - lastMediaTime) > 0.25;
+        const canBlend = rate < 0.999 && typeof video.requestVideoFrameCallback === "function";
+        if (!canBlend || seeked) {
+          captureFrame = true;
+          heldMix = 1;
+          blending = false;
+          havePresented = false;
+          pendingWall = null;
+        } else if (video.paused) {
+          pendingWall = null;
+          havePresented = false;
+        } else if (pendingWall !== null) {
+          const wall = pendingWall;
+          pendingWall = null;
+          captureFrame = true;
+          if (wall > 0.05) {
+            frameGap = Math.min(Math.max(wall, 0.05), 1.5);
+            blendStart = now;
+            heldMix = 0;
+            blending = true;
+          } else {
+            heldMix = 1;
+            blending = false;
+          }
+        } else if (blending) {
+          const linear = Math.min(1, (now - blendStart) / 1000 / Math.max(frameGap, 0.001));
+          heldMix = easeFrameMix(linear);
+          if (heldMix >= 0.999) blending = false;
+        } else if (!havePresented) {
+          captureFrame = true;
+          heldMix = 1;
+        }
+        lastMediaTime = time;
+      } else if (!video) {
+        lastMediaTime = -1;
+        havePresented = false;
+        pendingWall = null;
+        blending = false;
+        heldMix = 1;
+        stopWatch();
+      }
 
       if (snapshot.media && source && snapshot.media.width > 0 && snapshot.media.height > 0) {
         try {
@@ -78,7 +155,7 @@ export function useGradientLoop({ canvasRef, snapshotRef, imageRef, videoRef }: 
             phase,
             contrast: snapshot.contrast,
             fit: snapshot.fit,
-            frameMix: 1,
+            frameMix: heldMix,
             captureFrame,
           });
         } catch (error) {
@@ -94,6 +171,7 @@ export function useGradientLoop({ canvasRef, snapshotRef, imageRef, videoRef }: 
     frameId = requestAnimationFrame(loop);
     return () => {
       cancelAnimationFrame(frameId);
+      stopWatch();
       observer.disconnect();
       renderer.destroy();
     };
