@@ -37,6 +37,10 @@ export function useGradientLoop({ canvasRef, snapshotRef, imageRef, videoRef }: 
     let frameId = 0;
     let last = performance.now();
     let cycle = 0;
+    let lastFrameCount = -1;
+    let lastMediaTime = -1;
+    let frameStamp = 0;
+    let frameGap = 0.12;
 
     const resize = () => {
       const parent = canvas.parentElement;
@@ -63,6 +67,41 @@ export function useGradientLoop({ canvasRef, snapshotRef, imageRef, videoRef }: 
       phaseRef.current = phase;
 
       const source = sourceFor(snapshot.media, imageRef.current, videoRef.current);
+      let frameMix = 1;
+      let captureFrame = false;
+      const video = snapshot.media?.kind === "video" && source instanceof HTMLVideoElement ? source : null;
+      if (video) {
+        const rate = video.playbackRate || 1;
+        const time = video.currentTime;
+        const presented = video.getVideoPlaybackQuality?.().totalVideoFrames;
+        const knownCount = typeof presented === "number" && Number.isFinite(presented);
+        const ready = video.readyState >= 2 && video.videoWidth >= 2;
+        const seeked = lastMediaTime >= 0 && Math.abs(time - lastMediaTime) > 0.08;
+        const advanced = knownCount && lastFrameCount >= 0 && presented !== lastFrameCount;
+        if (!ready) {
+          captureFrame = false;
+        } else if (!knownCount || lastFrameCount < 0 || advanced || seeked) {
+          captureFrame = true;
+          if (advanced && !seeked && !video.paused && rate < 0.999) {
+            const wall = (now - frameStamp) / 1000;
+            if (wall > 0.045) frameGap = Math.min(Math.max(wall, 0.05), 0.85);
+            frameMix = wall > 0.045 ? 0 : 1;
+          }
+          frameStamp = now;
+          if (knownCount) lastFrameCount = presented;
+          lastMediaTime = time;
+        } else if (rate < 0.999) {
+          const linear = Math.min(1, (now - frameStamp) / 1000 / Math.max(frameGap, 0.001));
+          frameMix = linear * linear * (3 - 2 * linear);
+          lastMediaTime = time;
+        } else {
+          lastMediaTime = time;
+        }
+      } else {
+        lastFrameCount = -1;
+        lastMediaTime = -1;
+      }
+
       if (snapshot.media && source && snapshot.media.width > 0 && snapshot.media.height > 0) {
         try {
           renderer.draw({
@@ -74,6 +113,9 @@ export function useGradientLoop({ canvasRef, snapshotRef, imageRef, videoRef }: 
             mode: snapshot.mode,
             phase,
             contrast: snapshot.contrast,
+            fit: snapshot.fit,
+            frameMix,
+            captureFrame,
           });
         } catch (error) {
           console.error(error);

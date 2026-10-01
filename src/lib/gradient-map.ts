@@ -1,5 +1,6 @@
 import { hexToRgb } from "@/lib/color.ts";
-import type { GradientStop, MotionMode } from "@/lib/types.ts";
+import { frameSpan } from "@/lib/frame.ts";
+import type { FitMode, GradientStop, MotionMode } from "@/lib/types.ts";
 
 const VERT = `
 attribute vec2 aPos;
@@ -14,7 +15,9 @@ const FRAG = `
 precision mediump float;
 varying vec2 vUv;
 uniform sampler2D uTex;
+uniform sampler2D uTexPrev;
 uniform vec2 uSpan;
+uniform float uFrameMix;
 uniform float uContrast;
 uniform float uPhase;
 uniform int uMode;
@@ -59,7 +62,9 @@ void main() {
     return;
   }
 
-  vec3 src = texture2D(uTex, uv).rgb;
+  vec3 srcNow = texture2D(uTex, uv).rgb;
+  vec3 srcThen = texture2D(uTexPrev, uv).rgb;
+  vec3 src = mix(srcThen, srcNow, uFrameMix);
   float luma = dot(src, vec3(0.2126, 0.7152, 0.0722));
   luma = clamp((luma - 0.5) * uContrast + 0.5, 0.0, 1.0);
 
@@ -84,6 +89,9 @@ export type DrawFrame = {
   mode: MotionMode;
   phase: number;
   contrast: number;
+  fit: FitMode;
+  frameMix: number;
+  captureFrame: boolean;
 };
 
 type StopUniform = {
@@ -116,13 +124,19 @@ export class GradientMapRenderer {
   private readonly program: WebGLProgram;
   private readonly buffer: WebGLBuffer;
   private readonly texture: WebGLTexture;
+  private readonly previousTexture: WebGLTexture;
+  private readonly copyBuffer: WebGLFramebuffer;
   private readonly stopsA: StopUniform;
   private readonly stopsB: StopUniform;
   private readonly spanLocation: WebGLUniformLocation;
   private readonly contrastLocation: WebGLUniformLocation;
   private readonly phaseLocation: WebGLUniformLocation;
   private readonly modeLocation: WebGLUniformLocation;
+  private readonly frameMixLocation: WebGLUniformLocation;
   private lastSource: TexImageSource | null = null;
+  private uploaded = false;
+  private texWidth = 1;
+  private texHeight = 1;
   private readonly canvas: HTMLCanvasElement;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -166,19 +180,17 @@ export class GradientMapRenderer {
       gl.STATIC_DRAW,
     );
 
-    const texture = gl.createTexture();
-    if (!texture) throw new Error("Could not create a texture.");
-    this.texture = texture;
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+    this.texture = this.makeTexture();
+    this.previousTexture = this.makeTexture();
+    const copyBuffer = gl.createFramebuffer();
+    if (!copyBuffer) throw new Error("Could not create a framebuffer.");
+    this.copyBuffer = copyBuffer;
 
     gl.useProgram(program);
     gl.uniform1i(mustGetUniform(gl, program, "uTex"), 0);
+    gl.uniform1i(mustGetUniform(gl, program, "uTexPrev"), 1);
     this.spanLocation = mustGetUniform(gl, program, "uSpan");
+    this.frameMixLocation = mustGetUniform(gl, program, "uFrameMix");
     this.contrastLocation = mustGetUniform(gl, program, "uContrast");
     this.phaseLocation = mustGetUniform(gl, program, "uPhase");
     this.modeLocation = mustGetUniform(gl, program, "uMode");
@@ -190,11 +202,17 @@ export class GradientMapRenderer {
 
   resize(width: number, height: number) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const nextWidth = Math.max(1, Math.floor(width * dpr));
-    const nextHeight = Math.max(1, Math.floor(height * dpr));
-    if (this.canvas.width !== nextWidth || this.canvas.height !== nextHeight) {
-      this.canvas.width = nextWidth;
-      this.canvas.height = nextHeight;
+    this.resizePixels(width * dpr, height * dpr);
+  }
+
+  resizePixels(width: number, height: number) {
+    const nextWidth = Math.max(2, Math.round(width));
+    const nextHeight = Math.max(2, Math.round(height));
+    const evenWidth = nextWidth % 2 === 0 ? nextWidth : nextWidth - 1;
+    const evenHeight = nextHeight % 2 === 0 ? nextHeight : nextHeight - 1;
+    if (this.canvas.width !== evenWidth || this.canvas.height !== evenHeight) {
+      this.canvas.width = evenWidth;
+      this.canvas.height = evenHeight;
     }
     this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
   }
@@ -213,20 +231,17 @@ export class GradientMapRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
 
-    const video = frame.source instanceof HTMLVideoElement ? frame.source : null;
-    const canUpload = !video || video.readyState >= 2;
-    if (canUpload && (video || frame.source !== this.lastSource)) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame.source);
-      if (!video) this.lastSource = frame.source;
-    }
+    this.uploadSource(frame);
 
     const canvasAspect = this.canvas.width / Math.max(1, this.canvas.height);
     const sourceAspect = frame.sourceWidth / Math.max(1, frame.sourceHeight);
-    let spanX = 1;
-    let spanY = 1;
-    if (sourceAspect > canvasAspect) spanY = canvasAspect / sourceAspect;
-    else spanX = sourceAspect / canvasAspect;
+    const [spanX, spanY] = frameSpan(frame.fit, sourceAspect, canvasAspect);
 
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.previousTexture);
+    gl.uniform1f(this.frameMixLocation, frame.frameMix);
     gl.uniform2f(this.spanLocation, spanX, spanY);
     gl.uniform1f(this.contrastLocation, frame.contrast);
     gl.uniform1f(this.phaseLocation, frame.phase);
@@ -244,7 +259,61 @@ export class GradientMapRenderer {
     const { gl } = this;
     gl.deleteBuffer(this.buffer);
     gl.deleteTexture(this.texture);
+    gl.deleteTexture(this.previousTexture);
+    gl.deleteFramebuffer(this.copyBuffer);
     gl.deleteProgram(this.program);
+  }
+
+  private makeTexture(): WebGLTexture {
+    const { gl } = this;
+    const texture = gl.createTexture();
+    if (!texture) throw new Error("Could not create a texture.");
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+    return texture;
+  }
+
+  private uploadSource(frame: DrawFrame) {
+    const { gl } = this;
+    if (frame.source !== this.lastSource) {
+      this.lastSource = frame.source;
+      this.uploaded = false;
+    }
+
+    const video = frame.source instanceof HTMLVideoElement ? frame.source : null;
+    if (video) {
+      if (video.readyState < 2 || video.videoWidth < 2) return;
+      if (this.uploaded && !frame.captureFrame) return;
+      if (this.uploaded && frame.frameMix < 0.999) this.copyCurrentToPrevious();
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+      this.texWidth = video.videoWidth;
+      this.texHeight = video.videoHeight;
+      this.uploaded = true;
+      return;
+    }
+
+    if (this.uploaded && !frame.captureFrame) return;
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame.source);
+    this.texWidth = frame.sourceWidth;
+    this.texHeight = frame.sourceHeight;
+    this.uploaded = true;
+    this.copyCurrentToPrevious();
+  }
+
+  private copyCurrentToPrevious() {
+    if (this.texWidth < 2 || this.texHeight < 2) return;
+    const { gl } = this;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.copyBuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.texture, 0);
+    gl.bindTexture(gl.TEXTURE_2D, this.previousTexture);
+    gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, this.texWidth, this.texHeight, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
   private collectStops(prefix: "A" | "B"): StopUniform {

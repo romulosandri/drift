@@ -4,6 +4,7 @@ import { Pause, Play } from "lucide-react";
 import { useStudio } from "@/components/studio-context.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { formatRate, formatTime } from "@/lib/color.ts";
+import { aspectRatio } from "@/lib/frame.ts";
 import { cn } from "@/lib/utils.ts";
 
 export function Stage() {
@@ -11,21 +12,31 @@ export function Stage() {
   const reduce = useReducedMotion();
   const duration = studio.media?.duration ?? 0;
   const showEmpty = !studio.media && !studio.loading;
+  const ratio = aspectRatio(studio.aspect, studio.media);
+  const videoWidth = studio.media?.kind === "video" ? studio.media.width : 16;
+  const videoHeight = studio.media?.kind === "video" ? studio.media.height : 9;
 
   return (
-    <div
-      className="relative h-[68vh] min-h-80 bg-black lg:h-auto lg:min-h-0"
-      onDragOver={studio.onDragOver}
-      onDragLeave={studio.onDragLeave}
-      onDrop={studio.onDrop}
-    >
-      <div className="absolute inset-0">
+    <div className="relative flex h-[68vh] min-h-80 flex-col bg-black lg:h-auto lg:min-h-0">
+      <div
+        className="relative min-h-0 flex-1 [container-type:size]"
+        onDragOver={studio.onDragOver}
+        onDragLeave={studio.onDragLeave}
+        onDrop={studio.onDrop}
+      >
+      <div
+        className={cn("absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2", showEmpty && "invisible")}
+        style={{ width: `min(80cqw, calc(80cqh * ${ratio}))`, aspectRatio: String(ratio) }}
+      >
         <canvas ref={studio.canvasRef} className="h-full w-full" />
       </div>
 
       <video
         ref={studio.videoRef}
-        className="pointer-events-none fixed -left-[4000px] top-0 h-[180px] w-[320px] opacity-0"
+        width={videoWidth}
+        height={videoHeight}
+        className="pointer-events-none fixed top-0 opacity-0"
+        style={{ left: -12000, width: videoWidth, height: videoHeight }}
         playsInline
         muted={studio.muted}
         loop={studio.loop}
@@ -82,8 +93,9 @@ export function Stage() {
         </div>
       ) : null}
 
+      </div>
       {studio.media?.kind === "video" ? (
-        <div className="absolute inset-x-0 bottom-0 flex items-center gap-3 border-t border-white/10 bg-black/80 px-3 py-2 backdrop-blur-sm sm:px-4">
+        <div className="flex shrink-0 items-center gap-3 border-t border-white/10 bg-black px-3 py-2 sm:px-4">
           <Button variant="ghost" size="icon" onClick={studio.togglePlay} aria-label={studio.playing ? "Pause" : "Play"}>
             {studio.playing ? <Pause className="size-4" /> : <Play className="size-4" />}
           </Button>

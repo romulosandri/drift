@@ -1,15 +1,17 @@
-import { motion } from "motion/react";
 import { useEffect, useRef, useState, type DragEvent } from "react";
 
 import { Controls } from "@/components/controls.tsx";
+import { FramePanel } from "@/components/frame-panel.tsx";
 import { Stage } from "@/components/stage.tsx";
 import { StudioProvider, type StudioApi } from "@/components/studio-context.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { useGradientLoop } from "@/hooks/use-gradient-loop.ts";
 import { mixHex } from "@/lib/color.ts";
 import { downloadBlob, isMediaFile } from "@/lib/download.ts";
+import { renderExport } from "@/lib/export-movie.ts";
+import { aspectRatio } from "@/lib/frame.ts";
 import { cloneStops, presetById } from "@/lib/presets.ts";
-import type { EditTarget, GradientStop, LoadedMedia, MotionMode, RenderSnapshot } from "@/lib/types.ts";
+import type { AspectChoice, EditTarget, FitMode, GradientStop, LoadedMedia, MotionMode, RenderSnapshot } from "@/lib/types.ts";
 
 function fileStem(name: string): string {
   const stem = name.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "-").toLowerCase();
@@ -29,7 +31,6 @@ export function Studio() {
   const fileRef = useRef<HTMLInputElement>(null);
   const mediaRef = useRef<LoadedMedia | null>(null);
   const loadId = useRef(0);
-  const recorderRef = useRef<MediaRecorder | null>(null);
   const playbackRateRef = useRef(1);
   const loopRef = useRef(true);
   const mutedRef = useRef(true);
@@ -39,7 +40,7 @@ export function Studio() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [recording, setRecording] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [gradeA, setGradeA] = useState(() => cloneStops(presetById("tide").stops));
@@ -53,8 +54,10 @@ export function Studio() {
   const [loop, setLoop] = useState(true);
   const [muted, setMuted] = useState(true);
   const [keepPitch, setKeepPitch] = useState(true);
+  const [aspect, setAspect] = useState<AspectChoice>("16:9");
+  const [fit, setFit] = useState<FitMode>("contain");
+  const [imageDuration, setImageDuration] = useState(8);
 
-  const recordSupported = typeof MediaRecorder !== "undefined";
   const activeStops = mode === "sweep" || editTarget === "a" ? gradeA : gradeB;
 
   playbackRateRef.current = playbackRate;
@@ -70,9 +73,10 @@ export function Studio() {
     shiftSpeed,
     animate,
     contrast,
+    fit,
     media,
   });
-  snapshotRef.current = { gradeA, gradeB, mode, shiftSpeed, animate, contrast, media };
+  snapshotRef.current = { gradeA, gradeB, mode, shiftSpeed, animate, contrast, fit, media };
 
   const { phaseRef, glError, restartShift } = useGradientLoop({
     canvasRef,
@@ -137,7 +141,6 @@ export function Studio() {
     return () => {
       const current = mediaRef.current;
       if (current?.revoke && current.url) URL.revokeObjectURL(current.url);
-      if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
     };
   }, []);
 
@@ -154,11 +157,6 @@ export function Studio() {
     video.pause();
     video.removeAttribute("src");
     video.load();
-  }
-
-  function stopRecording() {
-    const recorder = recorderRef.current;
-    if (recorder && recorder.state !== "inactive") recorder.stop();
   }
 
   function applyPitch(video: HTMLVideoElement) {
@@ -260,7 +258,6 @@ export function Studio() {
     const generation = ++loadId.current;
     setLoading(true);
     setError(null);
-    stopRecording();
     releaseCurrent();
     const url = URL.createObjectURL(file);
     const videoFile = file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(file.name);
@@ -277,7 +274,6 @@ export function Studio() {
 
   function clearMedia() {
     loadId.current += 1;
-    stopRecording();
     releaseCurrent();
     imageRef.current = null;
     stopVideoElement();
@@ -347,64 +343,36 @@ export function Studio() {
     setCurrentTime(time);
   }
 
-  function saveFrame() {
-    const canvas = canvasRef.current;
+  async function exportMovie() {
     const current = mediaRef.current;
-    if (!canvas || !current) return;
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        setError("Could not save this frame.");
-        return;
-      }
-      downloadBlob(blob, `${fileStem(current.name)}-drift.png`);
-    }, "image/png");
-  }
-
-  function toggleRecording() {
-    if (recording) {
-      stopRecording();
-      return;
-    }
-    const canvas = canvasRef.current;
-    const current = mediaRef.current;
-    if (!canvas || !current || typeof MediaRecorder === "undefined") return;
-
-    const stream = canvas.captureStream(30);
-    if (current.kind === "video" && videoRef.current) {
-      const video = videoRef.current as HTMLVideoElement & { captureStream?: () => MediaStream };
-      const captured = video.captureStream?.();
-      captured?.getAudioTracks().forEach((track) => stream.addTrack(track));
-    }
-
-    const mimeType = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find((type) =>
-      MediaRecorder.isTypeSupported(type),
-    );
-
-    let recorder: MediaRecorder;
+    if (!current || exporting) return;
+    setExporting(true);
+    setError(null);
+    const preview = videoRef.current;
+    const resume = Boolean(preview && current.kind === "video" && !preview.paused);
+    preview?.pause();
     try {
-      recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 })
-        : new MediaRecorder(stream);
-    } catch {
-      setError("This browser could not start a recording.");
-      return;
+      const blob = await renderExport({
+        media: current,
+        image: current.kind === "image" ? imageRef.current : null,
+        gradeA,
+        gradeB,
+        mode,
+        shiftSpeed,
+        animate,
+        contrast,
+        fit,
+        aspect: aspectRatio(aspect, current),
+        playbackRate,
+        imageDuration,
+      });
+      downloadBlob(blob, `${fileStem(current.name)}-drift.mp4`);
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "Could not export.");
+    } finally {
+      setExporting(false);
+      if (resume) void preview?.play().catch(() => undefined);
     }
-
-    const chunks: Blob[] = [];
-    const canvasTracks = [...stream.getVideoTracks()];
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunks.push(event.data);
-    };
-    recorder.onstop = () => {
-      canvasTracks.forEach((track) => track.stop());
-      const blob = new Blob(chunks, { type: recorder.mimeType || "video/webm" });
-      downloadBlob(blob, `${fileStem(current.name)}-drift.webm`);
-      setRecording(false);
-      recorderRef.current = null;
-    };
-    recorder.start();
-    recorderRef.current = recorder;
-    setRecording(true);
   }
 
   function onDragOver(event: DragEvent<HTMLElement>) {
@@ -434,8 +402,7 @@ export function Studio() {
     error,
     glError,
     dragging,
-    recording,
-    recordSupported,
+    exporting,
     playing,
     currentTime,
     gradeA,
@@ -450,6 +417,9 @@ export function Studio() {
     loop,
     muted,
     keepPitch,
+    aspect,
+    fit,
+    imageDuration,
     setMode,
     setEditTarget,
     setShiftSpeed,
@@ -459,6 +429,9 @@ export function Studio() {
     setLoop,
     setMuted,
     setKeepPitch,
+    setAspect,
+    setFit,
+    setImageDuration,
     applyPreset,
     applyPassage,
     updateStop,
@@ -469,8 +442,7 @@ export function Studio() {
     clearMedia,
     togglePlay,
     scrub,
-    saveFrame,
-    toggleRecording,
+    exportMovie: () => void exportMovie(),
     onDragOver,
     onDragLeave,
     onDrop,
@@ -487,22 +459,9 @@ export function Studio() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={saveFrame} disabled={!media}>
-              Save frame
-            </Button>
-            <Button variant="outline" size="sm" onClick={toggleRecording} disabled={!media || !recordSupported}>
-              {recording ? (
-                <>
-                  <motion.span
-                    className="inline-block size-2 bg-white"
-                    animate={{ opacity: [1, 0.2, 1] }}
-                    transition={{ duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
-                  />
-                  Stop
-                </>
-              ) : (
-                "Record"
-              )}
+            <FramePanel />
+            <Button size="sm" onClick={() => void exportMovie()} disabled={!media || exporting}>
+              {exporting ? "Exporting" : "Export"}
             </Button>
           </div>
         </header>
