@@ -30,6 +30,10 @@ npm run preview
 
 The interface is black and white. Color lives in the grade.
 
+## Analytics
+
+Production builds read `.env.production`. Locally, copy `.env.example` to `.env`. Events go to the Portfolio Website PostHog project with `product` set to `drift`.
+
 ## Stack
 
 React, TypeScript, Vite, Tailwind CSS, shadcn/ui, and Motion. The map itself is a WebGL shader so video can play while the colors move.
