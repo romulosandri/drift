@@ -10,6 +10,7 @@ import { clampPlaybackRate, mixHex } from "@/lib/color.ts";
 import { downloadBlob, isMediaFile } from "@/lib/download.ts";
 import { renderExport } from "@/lib/export-movie.ts";
 import { aspectRatio } from "@/lib/frame.ts";
+import { track, trackException } from "@/lib/analytics.ts";
 import { cloneStops, presetById } from "@/lib/presets.ts";
 import type { AspectChoice, EditTarget, FitMode, GradientStop, LoadedMedia, MotionMode, RenderSnapshot } from "@/lib/types.ts";
 
@@ -264,9 +265,12 @@ export function Studio() {
     try {
       if (videoFile) await loadVideoElement(url, file.name, true, generation);
       else await loadImageElement(url, file.name, true, generation);
+      if (generation === loadId.current) track("media_loaded", { kind: videoFile ? "video" : "image" });
     } catch (loadError) {
       if (generation !== loadId.current) return;
       setError(loadError instanceof Error ? loadError.message : "Could not read that file.");
+      track("media_load_failed", { kind: videoFile ? "video" : "image" });
+      trackException(loadError, { source: "media_load" });
     } finally {
       if (generation === loadId.current) setLoading(false);
     }
@@ -281,6 +285,7 @@ export function Studio() {
     setCurrentTime(0);
     setError(null);
     setLoading(false);
+    track("media_cleared");
   }
 
   function setActiveStops(stops: GradientStop[]) {
@@ -320,6 +325,7 @@ export function Studio() {
 
   function applyPreset(id: string) {
     setActiveStops(cloneStops(presetById(id).stops));
+    track("preset_applied", { preset_id: id });
   }
 
   function applyPassage(from: string, to: string) {
@@ -327,6 +333,12 @@ export function Studio() {
     setGradeA(cloneStops(presetById(from).stops));
     setGradeB(cloneStops(presetById(to).stops));
     setEditTarget("a");
+    track("passage_applied", { from, to });
+  }
+
+  function selectMode(next: MotionMode) {
+    setMode(next);
+    track("motion_mode_changed", { mode: next });
   }
 
   function togglePlay() {
@@ -367,8 +379,16 @@ export function Studio() {
         imageDuration,
       });
       downloadBlob(blob, `${fileStem(current.name)}-drift.mp4`);
+      track("export_completed", {
+        kind: current.kind,
+        mode,
+        aspect,
+        fit,
+      });
     } catch (exportError) {
       setError(exportError instanceof Error ? exportError.message : "Could not export.");
+      track("export_failed", { kind: current.kind, mode, aspect });
+      trackException(exportError, { source: "export" });
     } finally {
       setExporting(false);
       if (resume) void preview?.play().catch(() => undefined);
@@ -420,7 +440,7 @@ export function Studio() {
     aspect,
     fit,
     imageDuration,
-    setMode,
+    setMode: selectMode,
     setEditTarget,
     setShiftSpeed,
     setAnimate,
